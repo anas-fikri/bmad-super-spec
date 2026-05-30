@@ -22,7 +22,7 @@
  * later, possibly on a different machine (just copy the project folder).
  */
 
-const { spawnSync } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -37,13 +37,45 @@ function log(message, stateDir) {
 }
 
 function execCmd(cmd, args, cwd) {
-  const result = spawnSync(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const err = result.stderr.toString() || result.stdout.toString();
-    throw new Error(`Command failed: ${cmd} ${args.join(' ')}\n${err}`);
-  }
-  return result.stdout.toString();
+  // Run command synchronously but provide visual progress feedback.
+  // Using spawnSync blocks the event loop, so we cannot show a spinner.
+  // Instead we implement an async version `execCmdAsync` that streams output.
+  // For backward compatibility, this wrapper calls the async version and waits.
+  const promise = execCmdAsync(cmd, args, cwd);
+  // Since the surrounding code expects a return value, we block using deasync-like approach.
+  // However, in Node we can simply use async/await in callers. We'll adjust callers accordingly.
+  // This placeholder will never be used after modifications.
+  throw new Error('execCmd should not be called after migration to async version');
+}
+
+async function execCmdAsync(cmd, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const spinner = ['|', '/', '-', '\\'];
+    let i = 0;
+    const interval = setInterval(() => {
+      process.stdout.write('\r' + spinner[i % spinner.length] + ' Running ' + cmd + ' ...');
+      i++;
+    }, 100);
+    child.stdout.on('data', data => { stdout += data.toString(); });
+    child.stderr.on('data', data => { stderr += data.toString(); });
+    child.on('close', code => {
+      clearInterval(interval);
+      process.stdout.write('\r'); // clear spinner line
+      if (code !== 0) {
+        const err = stderr || stdout;
+        reject(new Error(`Command failed: ${cmd} ${args.join(' ')}\n${err}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+    child.on('error', err => {
+      clearInterval(interval);
+      reject(err);
+    });
+  });
 }
 
 function loadState(projectRoot) {
@@ -112,40 +144,40 @@ async function workflowInit() {
   // Stage 1 – Vision & Constitution (BMad + Spec‑Kit)
   await runStage(projectRoot, 'vision‑constitution', async () => {
     // bmad‑help can be invoked directly; we just capture its output
-    execCmd('npx', ['bmad-method', 'help', '--skill', 'bmad-help'], projectRoot);
+    await execCmdAsync('npx', ['bmad-method', 'help', '--skill', 'bmad-help'], projectRoot);
     // create spec‑kit constitution
-    execCmd('specify', ['constitution', 'Create project guiding principles'], projectRoot);
+    await execCmdAsync('specify', ['constitution', 'Create project guiding principles'], projectRoot);
   });
 
   // Stage 2 – Brainstorm & Spec (Superpowers + Spec‑Kit)
   await runStage(projectRoot, 'brainstorm‑spec', async () => {
     // Superpowers skill “brainstorming” is triggered via PI skill run; we simulate with a CLI call
-    execCmd('pi', ['skill', 'run', 'superpowers', 'brainstorming'], projectRoot);
+    await execCmdAsync('pi', ['skill', 'run', 'superpowers', 'brainstorming'], projectRoot);
     // After brainstorming we ask for a formal spec via Spec‑Kit
-    execCmd('specify', ['specify', 'Describe the product in user‑story style'], projectRoot);
+    await execCmdAsync('specify', ['specify', 'Describe the product in user‑story style'], projectRoot);
   });
 
   // Stage 3 – Architecture & Planning (BMad + Superpowers)
   await runStage(projectRoot, 'architecture‑plan', async () => {
-    execCmd('npx', ['bmad-method', 'help', '--skill', 'bmad-party'], projectRoot);
-    execCmd('pi', ['skill', 'run', 'superpowers', 'writing-plans'], projectRoot);
+    await execCmdAsync('npx', ['bmad-method', 'help', '--skill', 'bmad-party'], projectRoot);
+    await execCmdAsync('pi', ['skill', 'run', 'superpowers', 'writing-plans'], projectRoot);
   });
 
   // Stage 4 – Generate Tasks (Spec‑Kit)
   await runStage(projectRoot, 'generate‑tasks', async () => {
-    execCmd('specify', ['tasks'], projectRoot);
+    await execCmdAsync('specify', ['tasks'], projectRoot);
     // optional: turn tasks into GitHub issues
-    execCmd('specify', ['taskstoissues'], projectRoot);
+    await execCmdAsync('specify', ['taskstoissues'], projectRoot);
   });
 
   // Stage 5 – Sub‑agent driven implementation (Superpowers)
   await runStage(projectRoot, 'implement', async () => {
-    execCmd('pi', ['skill', 'run', 'superpowers', 'subagent-driven-development'], projectRoot);
+    await execCmdAsync('pi', ['skill', 'run', 'superpowers', 'subagent-driven-development'], projectRoot);
   });
 
   // Stage 6 – Finish branch (BMad)
   await runStage(projectRoot, 'finish‑branch', async () => {
-    execCmd('npx', ['bmad-method', 'help', '--skill', 'bmad-finish-branch'], projectRoot);
+    await execCmdAsync('npx', ['bmad-method', 'help', '--skill', 'bmad-finish-branch'], projectRoot);
   });
 
   console.log('\n✅ Workflow completed! Check the log at:', path.join(projectRoot, LOG_FILE));
@@ -175,36 +207,36 @@ async function workflowContinue() {
     switch (s) {
       case 'vision‑constitution':
         await runStage(cwd, s, async () => {
-          execCmd('npx', ['bmad-method', 'help', '--skill', 'bmad-help'], cwd);
-          execCmd('specify', ['constitution', 'Create project guiding principles'], cwd);
+          await execCmdAsync('npx', ['bmad-method', 'help', '--skill', 'bmad-help'], cwd);
+          await execCmdAsync('specify', ['constitution', 'Create project guiding principles'], cwd);
         });
         break;
       case 'brainstorm‑spec':
         await runStage(cwd, s, async () => {
-          execCmd('pi', ['skill', 'run', 'superpowers', 'brainstorming'], cwd);
-          execCmd('specify', ['specify', 'Describe the product in user‑story style'], cwd);
+          await execCmdAsync('pi', ['skill', 'run', 'superpowers', 'brainstorming'], cwd);
+          await execCmdAsync('specify', ['specify', 'Describe the product in user‑story style'], cwd);
         });
         break;
       case 'architecture‑plan':
         await runStage(cwd, s, async () => {
-          execCmd('npx', ['bmad-method', 'help', '--skill', 'bmad-party'], cwd);
-          execCmd('pi', ['skill', 'run', 'superpowers', 'writing-plans'], cwd);
+          await execCmdAsync('npx', ['bmad-method', 'help', '--skill', 'bmad-party'], cwd);
+          await execCmdAsync('pi', ['skill', 'run', 'superpowers', 'writing-plans'], cwd);
         });
         break;
       case 'generate‑tasks':
         await runStage(cwd, s, async () => {
-          execCmd('specify', ['tasks'], cwd);
-          execCmd('specify', ['taskstoissues'], cwd);
+          await execCmdAsync('specify', ['tasks'], cwd);
+          await execCmdAsync('specify', ['taskstoissues'], cwd);
         });
         break;
       case 'implement':
         await runStage(cwd, s, async () => {
-          execCmd('pi', ['skill', 'run', 'superpowers', 'subagent-driven-development'], cwd);
+          await execCmdAsync('pi', ['skill', 'run', 'superpowers', 'subagent-driven-development'], cwd);
         });
         break;
       case 'finish‑branch':
         await runStage(cwd, s, async () => {
-          execCmd('npx', ['bmad-method', 'help', '--skill', 'bmad-finish-branch'], cwd);
+          await execCmdAsync('npx', ['bmad-method', 'help', '--skill', 'bmad-finish-branch'], cwd);
         });
         break;
     }

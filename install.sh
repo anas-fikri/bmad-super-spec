@@ -1,191 +1,170 @@
 #!/usr/bin/env bash
-#=====================================================================
-# bmad-super-spec – one‑click global installer
-#=====================================================================
-# Works on Linux, macOS, Windows (Git‑Bash / WSL)
-# Performs:
-#   1. Installs BMad Method (npm global)
-#   2. Installs uv (Python tool manager)
-#   3. Installs Spec‑Kit CLI via uv
-#   4. Registers Superpowers skill for common agents
-#   5. Copies the skill into the global PI skill directory
-#   6. Installs a tiny wrapper (`bmad-super-spec-run`) on the PATH
-#=====================================================================
 
 set -euo pipefail
 
-log()   { printf "\n\033[1;34m>> %s\033[0m\n" "$*"; }
-ok()    { printf "\033[1;32m✔ %s\033[0m\n" "$*"; }
-warn()  { printf "\033[1;33m⚠ %s\033[0m\n" "$*"; }
-error(){ printf "\033[1;31m✖ %s\033[0m\n" "$*"; exit 1; }
+# Helper to print messages
+info(){ echo -e "\033[1;34m[INFO]\033[0m $*"; }
+error(){ echo -e "\033[1;31m[ERROR]\033[0m $*" >&2; }
 
-# ---------- Detect OS ----------
-OS_TYPE="$(uname -s)"
-case "$OS_TYPE" in
-    Linux*)   OS=linux;;
-    Darwin*)  OS=mac;;
-    CYGWIN*|MINGW*|MSYS*) OS=windows;;
-    *)        error "Unsupported OS: $OS_TYPE";;
-esac
-log "Detected OS: $OS"
+# Ensure required commands exist
+for cmd in npm uv; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    error "Required command '$cmd' not found. Please install it first."
+    exit 1
+  fi
+done
 
-# ---------- 1. Install BMad Method (npm) ----------
-if command -v npx >/dev/null 2>&1 && npx --yes bmad-method --version >/dev/null 2>&1; then
-    ok "BMad Method already installed (global npm)."
+# Determine install mode: global (with sudo) or user‑local
+USE_SUDO=""
+if [ -w "$(npm root -g)" ] 2>/dev/null; then
+  info "You have write permission to the global npm directory. Installing globally without sudo."
 else
-    log "Installing BMad Method (npm global package)..."
-    npm i -g bmad-method
-    ok "BMad Method installed."
+  # Test if sudo works without password prompt (common in CI); if not, fall back to local install
+  if sudo -n true 2>/dev/null; then
+    USE_SUDO="sudo"
+    info "Will install globally using sudo."
+  else
+    info "No permission for global install and sudo requires a password. Falling back to user‑local npm prefix."
+    NPM_PREFIX="$HOME/.npm-global"
+    mkdir -p "$NPM_PREFIX"
+    npm config set prefix "$NPM_PREFIX"
+    export PATH="$NPM_PREFIX/bin:$PATH"
+    info "Local npm prefix set to $NPM_PREFIX. Updated PATH for this script run."
+  fi
 fi
 
-# ---------- 2. Install uv (Python tool manager) ----------
-install_uv_unix() {
-    if command -v brew >/dev/null 2>&1; then
-        if brew list uv >/dev/null 2>&1; then ok "uv already installed via Homebrew."; return; fi
-        log "Installing uv via Homebrew..."
-        brew install uv && ok "uv installed (brew)." && return
-    fi
-    if command -v apt-get >/dev/null 2>&1; then
-        if dpkg -s uv >/dev/null 2>&1; then ok "uv already installed via apt."; return; fi
-        log "Installing uv via apt (sudo required)..."
-        sudo apt-get update -qq && sudo apt-get install -y uv && ok "uv installed (apt)." && return
-    fi
-    if command -v dnf >/dev/null 2>&1; then
-        if rpm -q uv >/dev/null 2>&1; then ok "uv already installed via dnf."; return; fi
-        log "Installing uv via dnf (sudo required)..."
-        sudo dnf install -y uv && ok "uv installed (dnf)." && return
-    fi
-    if command -v curl >/dev/null 2>&1; then
-        log "Installing uv via official installer script (curl)..."
-        curl -LsSf https://github.com/astral-sh/uv/releases/latest/download/uv-installer.sh | sh && ok "uv installed (script)." && return
-    fi
-    error "Cannot install uv – missing brew/apt/dnf/curl."
-}
-install_uv_windows() {
-    if command -v winget >/dev/null 2>&1; then
-        if winget list --id Astral.Sh.Uv | grep -q "Astral.Sh.Uv"; then ok "uv already installed via winget."; return; fi
-        log "Installing uv via winget..."
-        winget install -e --id Astral.Sh.Uv && ok "uv installed (winget)." && return
-    fi
-    if command -v scoop >/dev/null 2>&1; then
-        if scoop list | grep -q "^uv"; then ok "uv already installed via scoop."; return; fi
-        log "Installing uv via scoop..."
-        scoop install uv && ok "uv installed (scoop)." && return
-    fi
-    log "Downloading uv binary for Windows..."
-    TMPDIR=$(mktemp -d)
-    cd "$TMPDIR"
-    curl -L -o uv-installer.ps1 https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1
-    powershell -ExecutionPolicy Bypass -File uv-installer.ps1 && ok "uv installed (PowerShell)."
-    cd - >/dev/null && rm -rf "$TMPDIR"
+install_pkg(){
+  local pkg="$1"
+  info "Installing $pkg..."
+  if [ -n "$USE_SUDO" ]; then
+    $USE_SUDO npm i -g "$pkg"
+  else
+    npm i -g "$pkg"
+  fi
 }
 
-if [[ "$OS" == "windows" ]]; then install_uv_windows; else install_uv_unix; fi
+# Install the three tools
+install_pkg bmad-method
+install_pkg superpowers
 
-# ---------- 3. Install Spec‑Kit CLI (via uv) ----------
-if command -v specify >/dev/null 2>&1; then
-    ok "Spec‑Kit CLI (specify) already present."
-else
-    log "Installing Spec‑Kit CLI via uv..."
-    uv tool install specify-cli && ok "Spec‑Kit CLI installed."
+# Install specify-cli via uv (already installed, but ensure latest)
+info "Ensuring specify-cli (Spec‑Kit) is installed via uv..."
+uv tool install specify-cli || true
+
+# Verify installations
+info "Verifying installations:"
+for cmd in bmad-method superpowers specify; do
+  if command -v "$cmd" >/dev/null 2>&1; then
+    ver=$($cmd --version 2>/dev/null || true)
+    echo "  $cmd → found${ver:+, version $ver}"
+  else
+    echo "  $cmd → NOT found"
+  fi
+done
+
+# If we used a local prefix, remind the user to persist PATH
+if [ -z "$USE_SUDO" ] && [ -n "${NPM_PREFIX-}" ]; then
+  echo -e "\n\033[1;33mNOTE:\033[0m To make the installed tools available in future shells, add the following line to your ~/.bashrc (or ~/.zshrc):"
+  echo "export PATH=\"$NPM_PREFIX/bin:\$PATH\""
 fi
 
-# ---------- 4. Register Superpowers (skill library) ----------
-install_superpowers() {
-    if command -v pi >/dev/null 2>&1; then
-        log "Registering Superpowers via generic PI command…"
-        pi skill install superpowers || true
-        ok "Superpowers registered with PI."
-        return
-    fi
-    # Claude Code detection (very naive)
-    if pgrep -f "claude" >/dev/null 2>&1; then
-        log "Installing Superpowers into Claude Code…"
-        /plugin install superpowers@claude-plugins-official || true
-        ok "Superpowers installed in Claude." && return
-    fi
-    # Cursor detection (again naive)
-    if pgrep -f "cursor" >/dev/null 2>&1; then
-        warn "Please run '/add-plugin superpowers' inside Cursor Agent chat."
-        return
-    fi
-    if command -v gemini >/dev/null 2>&1; then
-        log "Installing Superpowers into Gemini CLI…"
-        gemini extensions install https://github.com/obra/superpowers && ok "Superpowers installed in Gemini."
-        return
-    fi
-    warn "Automatic Superpowers registration failed. Please install it manually for your agent."
-    cat <<'EOF'
-  * Claude Code → /plugin install superpowers@claude-plugins-official
-  * Cursor     → /add-plugin superpowers   (in the Agent chat)
-  * Gemini CLI → gemini extensions install https://github.com/obra/superpowers
-  * OpenCode   → follow docs/README.opencode.md
-EOF
-}
-install_superpowers
+info "All done! You can now run the skill commands, e.g.:"
+echo "  pi skill run bmad-super-spec init"
 
-# ---------- 5. Determine global PI skill directory ----------
-PI_ROOT="${PI_ROOT:-${HOME}/.pi}"
-log "Using PI_ROOT = $PI_ROOT"
-mkdir -p "$PI_ROOT/skills"
-
-# ---------- 6. Copy the skill globally ----------
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_SRC="$REPO_ROOT"
+# ---------------------------------------------------------------
+# 1️⃣ Copy the skill into PI's skill directory (default $HOME/.pi/skills)
+# ---------------------------------------------------------------
+PI_ROOT="${PI_ROOT:-$HOME/.pi}"
+SKILL_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_DST="$PI_ROOT/skills/bmad-super-spec"
-if [[ -d "$SKILL_DST" ]]; then
-    SRC_VER=$(jq -r .version "$SKILL_SRC/manifest.json")
-    DST_VER=$(jq -r .version "$SKILL_DST/manifest.json" 2>/dev/null || echo "0.0.0")
-    if [[ "$SRC_VER" > "$DST_VER" ]]; then
-        log "Updating existing skill (v$DST_VER → v$SRC_VER)…"
-        rm -rf "$SKILL_DST"
-        cp -R "$SKILL_SRC" "$SKILL_DST"
-        ok "Skill updated to v$SRC_VER."
-    else
-        ok "Skill already present (v$DST_VER). No update needed."
-    fi
+info "Copying skill to $SKILL_DST"
+mkdir -p "$SKILL_DST"
+# Use rsync to copy without the .git directory and preserve permissions.
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --exclude='.git' "$SKILL_SRC/" "$SKILL_DST/"
 else
-    log "Copying skill into PI's global folder…"
-    cp -R "$SKILL_SRC" "$SKILL_DST"
-    ok "Skill installed globally."
+  # Fallback to cp if rsync is unavailable.
+  cp -r "$SKILL_SRC" "$SKILL_DST" || {
+    error "Failed to copy skill directory. Check permissions or install rsync."
+    exit 1
+  }
 fi
 
-# ---------- 7. Install wrapper script on PATH ----------
-install_wrapper() {
-    if [[ "$OS" == "windows" ]]; then
-        WRAPPER_DIR="${USERPROFILE}/AppData/Local/Microsoft/WindowsApps"
-    else
-        WRAPPER_DIR="${HOME}/.local/bin"
-    fi
-    mkdir -p "$WRAPPER_DIR"
-    WRAPPER_PATH="${WRAPPER_DIR}/bmad-super-spec-run"
-    cat >"$WRAPPER_PATH" <<'EOS'
+# ---------------------------------------------------------------
+# 2️⃣ Create the wrapper script(s) in a directory that is on PATH
+# ---------------------------------------------------------------
+# Detect platform (Linux/macOS/Git‑Bash vs native Windows PowerShell)
+OS_TYPE="$(uname -s 2>/dev/null || echo "Windows")"
+if [[ "$OS_TYPE" == "Linux" || "$OS_TYPE" == "Darwin" ]]; then
+  # Unix‑like environment – use ~/.local/bin
+  WRAPPER_DIR="${HOME}/.local/bin"
+  mkdir -p "$WRAPPER_DIR"
+  WRAPPER_PATH="$WRAPPER_DIR/bmad-super-spec-run"
+  info "Installing Unix wrapper at $WRAPPER_PATH"
+  cat > "$WRAPPER_PATH" <<'EOF'
 #!/usr/bin/env bash
-# Forward arguments to the PI skill
-set -euo pipefail
-PI_ROOT="${PI_ROOT:-${HOME}/.pi}"
-pi skill run bmad-super-spec "$@"
-EOS
-    chmod +x "$WRAPPER_PATH"
-    ok "Wrapper installed at $WRAPPER_PATH"
-    if ! command -v bmad-super-spec-run >/dev/null 2>&1; then
-        warn "Directory $WRAPPER_DIR is not on your PATH."
-        cat <<'HINT'
-Add the following line to your shell profile (e.g. ~/.bashrc, ~/.zshrc):
-    export PATH="\$PATH:$WRAPPER_DIR"
-Then reload the shell or run: source ~/.bashrc
-HINT
-    fi
-}
-install_wrapper
+# Directly run the orchestrator without invoking PI, to save RAM.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the installed skill directory (where the orchestrator resides).
+SKILL_ROOT="${HOME}/.pi/skills/bmad-super-spec"
+ORCHESTRATOR="${SKILL_ROOT}/orchestrator.js"
+exec node "$ORCHESTRATOR" "$@"
+EOF
+  chmod +x "$WRAPPER_PATH"
+else
+  # Assume native Windows (PowerShell/CMD). Use a batch file that calls node directly.
+  WRAPPER_DIR="${USERPROFILE}/AppData/Local/Microsoft/WindowsApps"
+  mkdir -p "$WRAPPER_DIR"
+  WRAPPER_PATH="$WRAPPER_DIR/bmad-super-spec-run.bat"
+  info "Installing Windows batch wrapper at $WRAPPER_PATH"
+  cat > "$WRAPPER_PATH" <<'EOF'
+@echo off
+rem Directly run the orchestrator without invoking PI, to save RAM.
+set "SKILL_ROOT=%USERPROFILE%\.pi\skills\bmad-super-spec"
+set "ORCHESTRATOR=%SKILL_ROOT%\orchestrator.js"
+node "%ORCHESTRATOR%" %*
+EOF
+  # No chmod needed on Windows
+fi
 
-log "===================================================================="
-log "🚀 Installation complete! 🎉"
-log "You can now start the workflow with a single command, e.g.:"
-cat <<'EXAMPLE'
-    bmad-super-spec-run init          # start a brand‑new project
-    bmad-super-spec-run status        # see current stage & log location
-    bmad-super-spec-run continue      # resume a paused workflow
-EXAMPLE
-log "All logs are stored inside the project folder under .bmad-super-spec/run.log"
-log "===================================================================="
+# ---------------------------------------------------------------
+# 3️⃣ Ensure the wrapper directory is in PATH (bash/zsh only for Unix)
+# ---------------------------------------------------------------
+if [[ "$OS_TYPE" == "Linux" || "$OS_TYPE" == "Darwin" ]]; then
+  if [[ ":$PATH:" != *":$WRAPPER_DIR:"* ]]; then
+    echo -e "\n\033[1;33mNOTE:\033[0m Adding $WRAPPER_DIR to your PATH for this session."
+    export PATH="$WRAPPER_DIR:$PATH"
+    # Also suggest persisting it for future shells
+    if [[ "${SHELL}" == *bash* ]]; then
+      echo "export PATH=\"$WRAPPER_DIR:\\$PATH\"" >> "${HOME}/.bashrc"
+      info "Appended PATH export to ${HOME}/.bashrc"
+    elif [[ "${SHELL}" == *zsh* ]]; then
+      echo "export PATH=\"$WRAPPER_DIR:\\$PATH\"" >> "${HOME}/.zshrc"
+      info "Appended PATH export to ${HOME}/.zshrc"
+    fi
+  fi
+else
+  # On native Windows the directory is already on PATH, but give a friendly reminder.
+  info "The wrapper was placed in $WRAPPER_DIR which is normally on PATH. If the command is not found, restart your terminal or add the folder to the system PATH manually."
+fi
+
+# ---------------------------------------------------------------
+# 4️⃣ Enable slash‑command / skill‑command support in PI settings
+# ---------------------------------------------------------------
+SETTINGS_FILE="$PI_ROOT/settings.json"
+if [ -f "$SETTINGS_FILE" ]; then
+  if ! grep -q '"enableSkillCommands"' "$SETTINGS_FILE"; then
+    info "Enabling skill commands in $SETTINGS_FILE"
+    # Insert the flag before the final closing brace (simple append)
+    tmp=$(mktemp)
+    jq '.enableSkillCommands = true' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+  fi
+else
+  info "Creating $SETTINGS_FILE with skill command enabled"
+  mkdir -p "$(dirname "$SETTINGS_FILE")"
+  echo '{"enableSkillCommands": true}' > "$SETTINGS_FILE"
+fi
+
+# ---------------------------------------------------------------
+# Finished – user can now run the wrapper or the direct PI command
+# ---------------------------------------------------------------
