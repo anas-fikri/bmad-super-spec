@@ -1,0 +1,11 @@
+{
+  "name": "bmad-super-spec",
+  "description": "Orchestrates BMad, Superpowers, and Spec‑Kit into a single reusable PI skill. Provides init, status, and resume capabilities.",
+  "version": "0.1.0",
+  "entry": "orchestrator.js",
+  "commands": [
+    {"name": "init","description":"Start a new workflow"},
+    {"name": "status","description":"Show current progress"},
+    {"name": "continue","description":"Resume from saved state"}
+  ]
+}
